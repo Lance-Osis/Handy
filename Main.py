@@ -4,8 +4,11 @@ import mediapipe as mp
 from Handtracker import Handtracker
 
 # initialize the webcam & handtracker
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 tracker = Handtracker()
+
+# initialize capture count
+capture_count = 0
 
 if not cap.isOpened():
     print("The camera wasn't opened")
@@ -21,27 +24,29 @@ while cap.isOpened():
         break
 
     frame = cv2.flip(frame, 1)
+    clean_frame = frame.copy()
 
-    frame, total_fingers = tracker.frame_process(frame) 
+    frame = tracker.frame_process(frame) 
 
     # == OPENCV ==
-    # displaying the semi-transparent background for the text
-    cv2.rectangle(frame, (20, 20), (320, 100), (0, 0, 0), cv2.FILLED)
-    cv2.putText(
-        frame,
-        f"Finger: {total_fingers}",
-        (35, 80),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1.8,
-        (0, 255, 0),
-        3,
-        cv2.LINE_AA
-    )
-
     # Show camera ui
+
+    key = cv2.waitKey(1) & 0xFF
     cv2.imshow('Webcam feed', frame)
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+
+    if key == ord('s'): # capture
+        coords, crop = tracker.capture(clean_frame)
+        if crop is not None:
+            capture_count += 1
+            x1, y1, x2, y2 = coords
+            print(f"Capture #{capture_count}: top-left=({x1}, {y1}), bottom-right=({x2}, {y2}), size={x2-x1}x{y2-y1}")
+            cv2.imshow(f'Capture {capture_count}', crop)
+        else:
+            print("No square drawn yet")
+    if key == ord('c'):
+        tracker.reset_rectangle()
+    if key == ord('q'):
         break
 
 cap.release()

@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 .vscode/
+venv/
+cert.pem
+key.pem

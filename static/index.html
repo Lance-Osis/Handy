@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handy</title>
+<style>
+  :root {
+    --bg: #0b0d14;
+    --panel: rgba(255, 255, 255, 0.05);
+    --panel-border: rgba(255, 255, 255, 0.09);
+    --text: #e8eaf2;
+    --muted: #8b90a5;
+    --accent: #7c5cff;
+    --accent-2: #22d3ee;
+    --good: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(900px 500px at 10% -10%, rgba(124, 92, 255, 0.25), transparent 60%),
+      radial-gradient(800px 500px at 100% 0%, rgba(34, 211, 238, 0.15), transparent 60%),
+      var(--bg);
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 28px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .logo {
+    width: 38px; height: 38px; border-radius: 11px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: grid; place-items: center; font-size: 20px;
+  }
+  h1 { margin: 0; font-size: 20px; letter-spacing: 0.3px; }
+  .sub { color: var(--muted); font-size: 13px; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
+    background: var(--panel); border: 1px solid var(--panel-border);
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .chip.good .dot { background: var(--good); box-shadow: 0 0 10px var(--good); }
+  .chip.warn .dot { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
+  .chip.bad  .dot { background: var(--bad);  box-shadow: 0 0 10px var(--bad); }
+
+  main {
+    display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px;
+    padding: 0 28px 28px;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 18px; backdrop-filter: blur(12px);
+  }
+  .stage { padding: 14px; }
+  .video-wrap {
+    position: relative; border-radius: 12px; overflow: hidden; background: #000;
+    aspect-ratio: 4 / 3;
+  }
+  .video-wrap img { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 2px 2px; }
+  button {
+    font: inherit; font-weight: 600; font-size: 14px; color: var(--text);
+    padding: 11px 18px; border-radius: 12px; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    transition: transform 0.12s, background 0.12s, border-color 0.12s;
+  }
+  button:hover { background: rgba(255, 255, 255, 0.09); transform: translateY(-1px); }
+  button:active { transform: translateY(0); }
+  button.primary {
+    border: none;
+    background: linear-gradient(135deg, var(--accent), #5b8cff);
+    box-shadow: 0 6px 20px rgba(124, 92, 255, 0.35);
+  }
+  button.primary:hover { filter: brightness(1.1); }
+  kbd {
+    margin-left: 8px; padding: 1px 7px; border-radius: 6px; font-size: 12px;
+    background: rgba(255, 255, 255, 0.12); color: var(--muted);
+    font-family: inherit;
+  }
+  .hint { color: var(--muted); font-size: 13px; padding: 10px 2px 0; }
+
+  aside { padding: 16px; display: flex; flex-direction: column; max-height: calc(100vh - 110px); }
+  .aside-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .aside-head h2 { margin: 0; font-size: 16px; }
+  .count {
+    margin-left: 8px; font-size: 12px; padding: 2px 9px; border-radius: 999px;
+    background: rgba(124, 92, 255, 0.25); color: #c9bdff;
+  }
+  .link-btn {
+    background: none; border: none; padding: 4px 6px; color: var(--muted);
+    font-size: 13px; font-weight: 500;
+  }
+  .link-btn:hover { color: var(--bad); background: none; transform: none; }
+
+  #gallery { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; }
+  .shot {
+    border-radius: 14px; overflow: hidden; background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--panel-border);
+    animation: pop 0.25s ease-out;
+  }
+  @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
+  .shot img { width: 100%; display: block; background: #000; }
+  .shot-info { padding: 10px 12px; font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+  .shot-info strong { color: var(--text); font-size: 13.5px; }
+  .shot-row { display: flex; justify-content: space-between; align-items: center; }
+  .shot a { color: var(--accent-2); text-decoration: none; font-weight: 600; }
+  .shot a:hover { text-decoration: underline; }
+  .empty { color: var(--muted); font-size: 14px; text-align: center; padding: 40px 10px; line-height: 1.6; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 20px);
+    padding: 12px 18px; border-radius: 12px; font-size: 14px; opacity: 0; pointer-events: none;
+    background: #1b1e2b; border: 1px solid var(--panel-border);
+    transition: opacity 0.2s, transform 0.2s;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="logo">&#9995;</div>
+    <div>
+      <h1>Handy</h1>
+      <div class="sub">Draw a square with your hands, capture what's inside</div>
+    </div>
+  </div>
+  <div id="chip" class="chip"><span class="dot"></span><span id="chipText">Connecting...</span></div>
+</header>
+
+<main>
+  <section class="card stage">
+    <div class="video-wrap">
+      <img src="/video" alt="Live camera feed">
+    </div>
+    <div class="controls">
+      <button class="primary" id="captureBtn">Capture<kbd>S</kbd></button>
+      <button id="resetBtn">Clear square<kbd>C</kbd></button>
+    </div>
+    <div class="hint">Pinch thumb + index on <b>both</b> hands to draw. Release to lock the square.</div>
+  </section>
+
+  <aside class="card">
+    <div class="aside-head">
+      <h2>Captures <span class="count" id="count">0</span></h2>
+      <button class="link-btn" id="clearAllBtn">Delete all</button>
+    </div>
+    <div id="gallery"></div>
+  </aside>
+</main>
+
+<div id="toast"></div>
+
+<script>
+  const chip = document.getElementById("chip");
+  const chipText = document.getElementById("chipText");
+  const gallery = document.getElementById("gallery");
+  const countEl = document.getElementById("count");
+  const toast = document.getElementById("toast");
+
+  // ---------- small helpers ----------
+  let toastTimer;
+  function showToast(message) {
+    toast.textContent = message;
+    toast.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove("show"), 2500);
+  }
+
+  // ---------- status chip (asks the server every 0.6 s) ----------
+  async function refreshStatus() {
+    try {
+      const res = await fetch("/api/status");
+      const s = await res.json();
+      if (!s.camera_ok) {
+        setChip("bad", "Camera offline");
+      } else if (s.has_square) {
+        setChip("good", "Square locked");
+      } else {
+        setChip("warn", "Pinch both hands to draw");
+      }
+    } catch (e) {
+      setChip("bad", "Server not reachable");
+    }
+  }
+  function setChip(kind, text) {
+    chip.className = "chip " + kind;
+    chipText.textContent = text;
+  }
+
+  // ---------- gallery ----------
+  async function loadGallery() {
+    const res = await fetch("/api/captures");
+    const items = await res.json();
+    countEl.textContent = items.length;
+    gallery.replaceChildren();
+
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No captures yet. Draw a square, then press Capture.";
+      gallery.appendChild(empty);
+      return;
+    }
+
+    for (const c of items) {
+      const card = document.createElement("div");
+      card.className = "shot";
+
+      const img = document.createElement("img");
+      img.src = `/api/captures/${c.id}/image`;
+      img.alt = `Capture ${c.id}`;
+
+      const info = document.createElement("div");
+      info.className = "shot-info";
+
+      const row = document.createElement("div");
+      row.className = "shot-row";
+      const title = document.createElement("strong");
+      title.textContent = `#${c.id} · ${c.width}×${c.height}`;
+      const dl = document.createElement("a");
+      dl.href = img.src;
+      dl.download = `capture_${c.id}.jpg`;
+      dl.textContent = "Download";
+      row.append(title, dl);
+
+      const coords = document.createElement("div");
+      coords.textContent = `Top-left (${c.x1}, ${c.y1}) · Bottom-right (${c.x2}, ${c.y2})`;
+      const time = document.createElement("div");
+      time.textContent = c.time;
+
+      info.append(row, coords, time);
+      card.append(img, info);
+      gallery.appendChild(card);
+    }
+  }
+
+  // ---------- actions ----------
+  async function doCapture() {
+    const res = await fetch("/api/capture", { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast(err.detail || "Capture failed");
+      return;
+    }
+    showToast("Captured!");
+    loadGallery();
+  }
+  async function doReset() {
+    await fetch("/api/reset", { method: "POST" });
+    showToast("Square cleared");
+    refreshStatus();
+  }
+  async function doClearAll() {
+    await fetch("/api/captures", { method: "DELETE" });
+    loadGallery();
+  }
+
+  document.getElementById("captureBtn").addEventListener("click", doCapture);
+  document.getElementById("resetBtn").addEventListener("click", doReset);
+  document.getElementById("clearAllBtn").addEventListener("click", doClearAll);
+
+  // keyboard shortcuts, same keys as before
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "s" || e.key === "S") doCapture();
+    if (e.key === "c" || e.key === "C") doReset();
+  });
+
+  // ---------- start ----------
+  refreshStatus();
+  loadGallery();
+  setInterval(refreshStatus, 600);
+</script>
+</body>
+</html>
