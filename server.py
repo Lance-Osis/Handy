@@ -1,225 +1,204 @@
 """
-Handy - FastAPI backend
+Handy - MOBILE MODE 
 
-What this file does:
-  1. Opens your webcam ONCE, in a background thread.
-  2. Runs every frame through your Handtracker (the same class you already wrote).
-  3. Streams the annotated frames to the browser as a live video (MJPEG).
-  4. Offers small "API" endpoints the web page calls: capture, reset, list captures.
+Here the MOBILE films you and this PC does the hand tracking:
+
+  mobile camera -> (WebSocket, one JPEG per frame) -> this server runs Handtracker
+  mobile screen <- (WebSocket, annotated JPEG back) <-
+
+Why HTTPS? Phone browsers only allow camera access on secure pages (https://).
+This script makes a self-signed certificate for you automatically the first time
+(cert.pem + key.pem). Your phone will warn that it isn't trusted. That's expected,
+because you made the certificate yourself. Proceed anyway.
 
 Run it with:   python server.py
-Then open:     http://127.0.0.1:8000
 """
-import threading
+import asyncio
+import base64
+import datetime
+import ipaddress
+import socket
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 import cv2
+import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
-from Handtracker import Handtracker
+from handtracker import Handtracker
 
 BASE_DIR = Path(__file__).parent
-INDEX_HTML = BASE_DIR / "static" / "index.html"
+PAGE = BASE_DIR / "static" / "web.html"
+CERT_FILE = BASE_DIR / "cert.pem"
+KEY_FILE = BASE_DIR / "key.pem"
+PORT = 8443
+
+app = FastAPI(title="Handy phone mode")
 
 
-class CameraWorker:
-    """Reads the webcam in a background thread so the web server never blocks."""
-
-    def __init__(self, camera_index=0):
-        self.camera_index = camera_index
-        self.tracker = Handtracker()
-
-        self.cap = None
-        self.thread = None
-        self.running = False
-
-        # A lock stops two threads (camera loop + web requests) from touching
-        # the same data at the same moment.
-        self.lock = threading.Lock()
-
-        self.latest_jpeg = None   # newest annotated frame, ready to stream
-        self.clean_frame = None   # newest frame WITHOUT drawings (used for captures)
-
-        self.captures = []        # every capture taken so far (kept in memory)
-        self.next_id = 1
-
-    # ---------- start / stop ----------
-    def start(self):
-        self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-        if not self.cap.isOpened():
-            print("!! Could not open the camera. Close other apps using it and restart.")
-            return
-        self.running = True
-        self.thread = threading.Thread(target=self._loop, daemon=True)
-        self.thread.start()
-        print("Camera started.")
-
-    def stop(self):
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=2)
-        if self.cap:
-            self.cap.release()
-
-    # ---------- the camera loop (runs forever in its own thread) ----------
-    def _loop(self):
-        while self.running:
-            ok, frame = self.cap.read()
-            if not ok:
-                time.sleep(0.05)
-                continue
-
-            frame = cv2.flip(frame, 1)
-            clean = frame.copy()  # untouched copy, so captures don't include the green square
-
-            with self.lock:
-                annotated = self.tracker.frame_process(frame)
-                self.clean_frame = clean
-
-            ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if ok:
-                with self.lock:
-                    self.latest_jpeg = buf.tobytes()
-
-    # ---------- things the web page can ask for ----------
-    def get_jpeg(self):
-        with self.lock:
-            return self.latest_jpeg
-
-    def capture(self):
-        """Crop the drawn square. Returns the new capture, or None if there's no square."""
-        with self.lock:
-            if self.clean_frame is None:
-                return None
-            coords, crop = self.tracker.capture(self.clean_frame)
-
-        if crop is None:
-            return None
-
-        ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        if not ok:
-            return None
-
-        x1, y1, x2, y2 = coords
-        with self.lock:
-            item = {
-                "id": self.next_id,
-                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                "width": x2 - x1,
-                "height": y2 - y1,
-                "time": time.strftime("%H:%M:%S"),
-                "jpeg": buf.tobytes(),
-            }
-            self.next_id += 1
-            self.captures.append(item)
-        return item
-
-    def reset_square(self):
-        with self.lock:
-            self.tracker.reset_rectangle()
-
-    def clear_captures(self):
-        with self.lock:
-            self.captures.clear()
-
-    def status(self):
-        with self.lock:
-            return {
-                "camera_ok": self.running and self.latest_jpeg is not None,
-                "has_square": self.tracker.drawn_square is not None,
-                "capture_count": len(self.captures),
-            }
-
-
-def public(item):
-    """The capture info we send to the browser (without the raw image bytes)."""
-    return {k: v for k, v in item.items() if k != "jpeg"}
-
-
-camera = CameraWorker()
-
-
-@asynccontextmanager
-async def lifespan(app):
-    camera.start()   # runs when the server starts
-    yield
-    camera.stop()    # runs when the server shuts down
-
-
-app = FastAPI(title="Handy", lifespan=lifespan)
-
-
-# ---------- the web page ----------
 @app.get("/")
 def home():
-    return FileResponse(INDEX_HTML)
+    return FileResponse(PAGE)
 
 
-# ---------- live video ----------
-def mjpeg_frames():
-    """Yields the newest frame again and again. The browser shows it as a video."""
-    while True:
-        jpeg = camera.get_jpeg()
-        if jpeg is None:
-            time.sleep(0.05)
-            continue
-        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-        time.sleep(0.03)  # about 30 frames per second
+def process_frame(tracker, jpeg_bytes):
+    """Decode one JPEG from the phone, run the tracker, return the results.
+    (Runs in a worker thread so the server stays responsive.)"""
+    frame = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return None
+
+    frame = cv2.flip(frame, 1)   # mirror view, same as your PC version
+    clean = frame.copy()         # untouched copy for captures
+    annotated = tracker.frame_process(frame)
+
+    ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    if not ok:
+        return None
+    return clean, buf.tobytes(), tracker.drawn_square is not None
 
 
-@app.get("/video")
-def video():
-    return StreamingResponse(
-        mjpeg_frames(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
+@app.websocket("/ws")
+async def phone_socket(ws: WebSocket):
+    await ws.accept()
+
+    # Every connected phone gets its OWN tracker, so each has its own square.
+    tracker = Handtracker()
+    clean = None          # newest un-annotated frame of this phone
+    next_id = 1
+
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+
+            # ---- a camera frame from the phone ----
+            if msg.get("bytes") is not None:
+                result = await asyncio.to_thread(process_frame, tracker, msg["bytes"])
+                if result is None:
+                    await ws.send_json({"type": "skip"})   # bad frame, ask for the next one
+                    continue
+                clean, annotated_jpeg, has_square = result
+                await ws.send_json({"type": "status", "has_square": has_square})
+                await ws.send_bytes(annotated_jpeg)
+
+            # ---- a button press ----
+            elif msg.get("text") is not None:
+                command = msg["text"]
+
+                if command == "capture":
+                    coords, crop = (None, None)
+                    if clean is not None:
+                        coords, crop = tracker.capture(clean)
+                    if crop is None:
+                        await ws.send_json({"type": "error",
+                                            "detail": "No square yet. Pinch with both hands to draw one."})
+                        continue
+
+                    ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                    x1, y1, x2, y2 = coords
+                    await ws.send_json({
+                        "type": "capture",
+                        "id": next_id,
+                        "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                        "width": x2 - x1, "height": y2 - y1,
+                        "frame_width": clean.shape[1], "frame_height": clean.shape[0],
+                        "time": time.strftime("%H:%M:%S"),
+                        "image": base64.b64encode(buf.tobytes()).decode("ascii"),
+                    })
+                    next_id += 1
+
+                elif command == "reset":
+                    tracker.reset_rectangle()
+                    await ws.send_json({"type": "status", "has_square": False})
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            tracker.hands.close()   # free the MediaPipe resources
+        except Exception:
+            pass
+
+
+# ---------- HTTPS certificate helpers ----------
+def get_lan_ip():
+    """The PC's address on your Wi-Fi (what the phone types in)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))   # no data is actually sent
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def ensure_cert(ip):
+    """Create cert.pem/key.pem if missing, or if your PC's IP changed."""
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+    except ImportError:
+        raise SystemExit("Missing package. Run:  pip install cryptography websockets")
+
+    wanted = ipaddress.ip_address(ip)
+
+    if CERT_FILE.exists() and KEY_FILE.exists():
+        try:
+            cert = x509.load_pem_x509_certificate(CERT_FILE.read_bytes())
+            san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+            if wanted in san.get_values_for_type(x509.IPAddress):
+                return   # existing certificate already covers this IP
+        except Exception:
+            pass
+
+    print("Creating a self-signed certificate...")
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Handy local")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ips = {ipaddress.ip_address("127.0.0.1"), wanted}
+    alt_names = [x509.DNSName("localhost")] + [x509.IPAddress(i) for i in ips]
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=365))
+        .add_extension(x509.SubjectAlternativeName(alt_names), critical=False)
+        .sign(key, hashes.SHA256())
     )
+    KEY_FILE.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ))
+    CERT_FILE.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
 
 
-# ---------- API ----------
-@app.get("/api/status")
-def status():
-    return camera.status()
+def main():
+    ip = get_lan_ip()
+    ensure_cert(ip)
 
+    print()
+    print("Phone mode is starting.")
+    print(f"  On your phone (same Wi-Fi), open:  https://{ip}:{PORT}")
+    print(f"  Testing on this PC instead?        https://localhost:{PORT}")
+    print("  Your browser will warn the certificate is not trusted.")
+    print("  That's expected. Choose Advanced -> Proceed.")
+    print()
 
-@app.post("/api/capture")
-def capture():
-    item = camera.capture()
-    if item is None:
-        raise HTTPException(status_code=400, detail="No square yet. Pinch with both hands to draw one.")
-    return public(item)
-
-
-@app.post("/api/reset")
-def reset():
-    camera.reset_square()
-    return {"ok": True}
-
-
-@app.get("/api/captures")
-def list_captures():
-    with camera.lock:
-        items = [public(c) for c in camera.captures]
-    return list(reversed(items))  # newest first
-
-
-@app.get("/api/captures/{capture_id}/image")
-def capture_image(capture_id: int):
-    with camera.lock:
-        for c in camera.captures:
-            if c["id"] == capture_id:
-                return Response(content=c["jpeg"], media_type="image/jpeg")
-    raise HTTPException(status_code=404, detail="Capture not found")
-
-
-@app.delete("/api/captures")
-def clear_captures():
-    camera.clear_captures()
-    return {"ok": True}
+    uvicorn.run(app, host="0.0.0.0", port=PORT,
+                ssl_keyfile=str(KEY_FILE), ssl_certfile=str(CERT_FILE))
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    main()

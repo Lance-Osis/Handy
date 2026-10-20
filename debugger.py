@@ -1,11 +1,13 @@
+# FOR DEBUGGING, RUNNING ONLY handtracker.py
+
 import cv2
 import numpy as np
 import mediapipe as mp
-from Handtracker import Handtracker
+from handtracker import handtracker
 
 # initialize the webcam & handtracker
 cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-tracker = Handtracker()
+tracker = handtracker()
 
 # initialize capture count
 capture_count = 0
