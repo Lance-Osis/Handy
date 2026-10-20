@@ -1,5 +1,5 @@
 """
-Handy - MOBILE MODE 
+Handy - MOBILE MODE
 
 Here the MOBILE films you and this PC does the hand tracking:
 
@@ -29,11 +29,17 @@ from fastapi.responses import FileResponse
 
 from handtracker import Handtracker
 
+# ---------- settings ----------
 BASE_DIR = Path(__file__).parent
 PAGE = BASE_DIR / "static" / "web.html"
 CERT_FILE = BASE_DIR / "cert.pem"
 KEY_FILE = BASE_DIR / "key.pem"
 PORT = 8443
+
+STREAM_JPEG_QUALITY = 75     # frames sent back to the phone (speed matters)
+CAPTURE_JPEG_QUALITY = 95    # saved captures (quality matters)
+
+NO_SQUARE_MESSAGE = "No square yet. Pinch with both hands to draw one."
 
 app = FastAPI(title="Handy phone mode")
 
@@ -43,9 +49,19 @@ def home():
     return FileResponse(PAGE)
 
 
+# ---------- frame processing ----------
+def encode_jpeg(image, quality):
+    """Return the image as JPEG bytes, or None if encoding failed."""
+    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return buf.tobytes() if ok else None
+
+
 def process_frame(tracker, jpeg_bytes):
     """Decode one JPEG from the phone, run the tracker, return the results.
-    (Runs in a worker thread so the server stays responsive.)"""
+    (Runs in a worker thread so the server stays responsive.)
+
+    Returns (clean_frame, annotated_jpeg, has_square), or None for a bad frame.
+    """
     frame = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return None
@@ -54,20 +70,74 @@ def process_frame(tracker, jpeg_bytes):
     clean = frame.copy()         # untouched copy for captures
     annotated = tracker.frame_process(frame)
 
-    ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
-    if not ok:
+    annotated_jpeg = encode_jpeg(annotated, STREAM_JPEG_QUALITY)
+    if annotated_jpeg is None:
         return None
-    return clean, buf.tobytes(), tracker.drawn_square is not None
+    return clean, annotated_jpeg, tracker.drawn_square is not None
+
+
+# ---------- one connected phone ----------
+class PhoneSession:
+    """Everything that belongs to ONE phone: its tracker, newest frame and capture counter.
+    Every phone gets its own tracker, so each has its own square."""
+
+    def __init__(self, ws):
+        self.ws = ws
+        self.tracker = Handtracker()
+        self.clean = None    # newest un-annotated frame of this phone
+        self.next_id = 1
+
+    async def on_frame(self, jpeg_bytes):
+        """A camera frame arrived: track it and send the annotated version back."""
+        result = await asyncio.to_thread(process_frame, self.tracker, jpeg_bytes)
+        if result is None:
+            await self.ws.send_json({"type": "skip"})   # bad frame, ask for the next one
+            return
+
+        self.clean, annotated_jpeg, has_square = result
+        await self.ws.send_json({"type": "status", "has_square": has_square})
+        await self.ws.send_bytes(annotated_jpeg)
+
+    async def on_command(self, command):
+        """A button press arrived."""
+        if command == "capture":
+            await self.capture()
+        elif command == "reset":
+            self.tracker.reset_rectangle()
+            await self.ws.send_json({"type": "status", "has_square": False})
+
+    async def capture(self):
+        coords, crop = (None, None)
+        if self.clean is not None:
+            coords, crop = self.tracker.capture(self.clean)
+        if crop is None:
+            await self.ws.send_json({"type": "error", "detail": NO_SQUARE_MESSAGE})
+            return
+
+        x1, y1, x2, y2 = coords
+        crop_jpeg = encode_jpeg(crop, CAPTURE_JPEG_QUALITY)
+        await self.ws.send_json({
+            "type": "capture",
+            "id": self.next_id,
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "width": x2 - x1, "height": y2 - y1,
+            "frame_width": self.clean.shape[1], "frame_height": self.clean.shape[0],
+            "time": time.strftime("%H:%M:%S"),
+            "image": base64.b64encode(crop_jpeg).decode("ascii"),
+        })
+        self.next_id += 1
+
+    def close(self):
+        try:
+            self.tracker.hands.close()   # free the MediaPipe resources
+        except Exception:
+            pass
 
 
 @app.websocket("/ws")
 async def phone_socket(ws: WebSocket):
     await ws.accept()
-
-    # Every connected phone gets its OWN tracker, so each has its own square.
-    tracker = Handtracker()
-    clean = None          # newest un-annotated frame of this phone
-    next_id = 1
+    session = PhoneSession(ws)
 
     try:
         while True:
@@ -75,53 +145,14 @@ async def phone_socket(ws: WebSocket):
             if msg["type"] == "websocket.disconnect":
                 break
 
-            # ---- a camera frame from the phone ----
             if msg.get("bytes") is not None:
-                result = await asyncio.to_thread(process_frame, tracker, msg["bytes"])
-                if result is None:
-                    await ws.send_json({"type": "skip"})   # bad frame, ask for the next one
-                    continue
-                clean, annotated_jpeg, has_square = result
-                await ws.send_json({"type": "status", "has_square": has_square})
-                await ws.send_bytes(annotated_jpeg)
-
-            # ---- a button press ----
+                await session.on_frame(msg["bytes"])
             elif msg.get("text") is not None:
-                command = msg["text"]
-
-                if command == "capture":
-                    coords, crop = (None, None)
-                    if clean is not None:
-                        coords, crop = tracker.capture(clean)
-                    if crop is None:
-                        await ws.send_json({"type": "error",
-                                            "detail": "No square yet. Pinch with both hands to draw one."})
-                        continue
-
-                    ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                    x1, y1, x2, y2 = coords
-                    await ws.send_json({
-                        "type": "capture",
-                        "id": next_id,
-                        "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                        "width": x2 - x1, "height": y2 - y1,
-                        "frame_width": clean.shape[1], "frame_height": clean.shape[0],
-                        "time": time.strftime("%H:%M:%S"),
-                        "image": base64.b64encode(buf.tobytes()).decode("ascii"),
-                    })
-                    next_id += 1
-
-                elif command == "reset":
-                    tracker.reset_rectangle()
-                    await ws.send_json({"type": "status", "has_square": False})
-
+                await session.on_command(msg["text"])
     except WebSocketDisconnect:
         pass
     finally:
-        try:
-            tracker.hands.close()   # free the MediaPipe resources
-        except Exception:
-            pass
+        session.close()
 
 
 # ---------- HTTPS certificate helpers ----------
@@ -137,32 +168,31 @@ def get_lan_ip():
         s.close()
 
 
-def ensure_cert(ip):
-    """Create cert.pem/key.pem if missing, or if your PC's IP changed."""
+def cert_covers_ip(ip):
+    """True if the existing cert.pem/key.pem already work for this IP."""
+    from cryptography import x509
+
+    if not (CERT_FILE.exists() and KEY_FILE.exists()):
+        return False
     try:
-        from cryptography import x509
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.x509.oid import NameOID
-    except ImportError:
-        raise SystemExit("Missing package. Run:  pip install cryptography websockets")
+        cert = x509.load_pem_x509_certificate(CERT_FILE.read_bytes())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        return ipaddress.ip_address(ip) in san.get_values_for_type(x509.IPAddress)
+    except Exception:
+        return False
 
-    wanted = ipaddress.ip_address(ip)
 
-    if CERT_FILE.exists() and KEY_FILE.exists():
-        try:
-            cert = x509.load_pem_x509_certificate(CERT_FILE.read_bytes())
-            san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-            if wanted in san.get_values_for_type(x509.IPAddress):
-                return   # existing certificate already covers this IP
-        except Exception:
-            pass
+def create_cert(ip):
+    """Write a new self-signed cert.pem/key.pem valid for localhost and this IP."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
 
-    print("Creating a self-signed certificate...")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Handy local")])
     now = datetime.datetime.now(datetime.timezone.utc)
-    ips = {ipaddress.ip_address("127.0.0.1"), wanted}
+    ips = {ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address(ip)}
     alt_names = [x509.DNSName("localhost")] + [x509.IPAddress(i) for i in ips]
 
     cert = (
@@ -182,6 +212,19 @@ def ensure_cert(ip):
         serialization.NoEncryption(),
     ))
     CERT_FILE.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+
+def ensure_cert(ip):
+    """Create cert.pem/key.pem if missing, or if your PC's IP changed."""
+    try:
+        import cryptography  # noqa: F401  (only checking it is installed)
+    except ImportError:
+        raise SystemExit("Missing package. Run:  pip install cryptography websockets")
+
+    if cert_covers_ip(ip):
+        return
+    print("Creating a self-signed certificate...")
+    create_cert(ip)
 
 
 def main():
