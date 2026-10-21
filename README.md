@@ -15,7 +15,7 @@ With **Handy**, users can interactively control photo capture and manipulation t
 ## ✨ Key Features
 
 *   ✌️ **Gesture-Based Cropping:** Crop photos intuitively using finger gestures via real-time computer vision tracking.
-*   📸 **Gesture Photo Capture:** Capture frames effortlessly without touching a traditional mouse or keyboard.
+*   📸 **Gesture Photo Capture:** Capture frame
 *   🎨 **Interactive Canvas:** Place captured photos directly onto a canvas workspace.
 *   ✏️ **Photo Editing:** Adjust and refine your image composition right in the browser.
 *   🖼️ **Export & View:** Enjoy and export your final edited visual creation!
