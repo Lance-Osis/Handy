@@ -38,11 +38,3 @@ With **Handy**, users can interactively control photo capture and manipulation t
 
 ---
 
-## 📂 Project Structure
-
-```text
-handy/
-│
-├── index.html       # Web interface & canvas workspace
-├── main.py          # Python back-end & computer vision script
-└── README.md        # Project documentation
