@@ -12,6 +12,11 @@ With **Handy**, users can interactively control photo capture and manipulation t
 
 ---
 
+## 📸 Preview
+<img width="720" height="960" alt="handy-photo-booth-portrait" src="https://github.com/user-attachments/assets/9cfbfa6d-8240-4ff0-b8e9-3eca6eec3e24" />
+
+---
+
 ## ✨ Key Features
 
 *   ✌️ **Gesture-Based Cropping:** Crop photos intuitively using finger gestures via real-time computer vision tracking.
