@@ -20,21 +20,32 @@ import ipaddress
 import socket
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import cv2
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from handtracker import Handtracker
 
 # ---------- settings ----------
 BASE_DIR = Path(__file__).parent
-PAGE = BASE_DIR / "static" / "web.html"
+PAGE = BASE_DIR / "static" / "index.html"
 CERT_FILE = BASE_DIR / "cert.pem"
 KEY_FILE = BASE_DIR / "key.pem"
 PORT = 8443
+
+# Stickers live in <this folder>/assets/stickers  (the misspelling "assest" is also accepted).
+ASSET_DIR = next(
+    (BASE_DIR / name for name in ("assets") if (BASE_DIR / name / "stickers").is_dir()),
+    BASE_DIR / "assets",
+)
+STICKER_DIR = ASSET_DIR / "stickers"
+STICKER_DIR.mkdir(parents=True, exist_ok=True)    # so the app still starts if the folder is missing
+STICKER_EXTENSIONS = {".png", ".webp", ".gif", ".jpg", ".jpeg", ".svg"}
 
 STREAM_JPEG_QUALITY = 75     # frames sent back to the phone (speed matters)
 CAPTURE_JPEG_QUALITY = 95    # saved captures (quality matters)
@@ -42,6 +53,27 @@ CAPTURE_JPEG_QUALITY = 95    # saved captures (quality matters)
 NO_SQUARE_MESSAGE = "No square yet. Pinch with both hands to draw one."
 
 app = FastAPI(title="Handy phone mode")
+
+# The phone loads sticker images from /assets/...
+app.mount("/assets", StaticFiles(directory=ASSET_DIR), name="assets")
+
+
+@app.get("/api/stickers")
+def list_stickers():
+    """List every image in the stickers folder so the page can show them in its sticker panel.
+    Read on each request, so new files appear after a page reload (no server restart needed)."""
+    files = [
+        p for p in STICKER_DIR.iterdir()
+        if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in STICKER_EXTENSIONS
+    ]
+    files.sort(key=lambda p: p.name.lower())
+    return [
+        {
+            "name": p.stem.replace("_", " ").replace("-", " "),
+            "url": f"/assets/{p.parent.relative_to(ASSET_DIR).as_posix()}/{quote(p.name)}",
+        }
+        for p in files
+    ]
 
 
 @app.get("/")
